@@ -1,51 +1,53 @@
-from celery.result import AsyncResult
-from fastapi import FastAPI
+import time
+import redis.asyncio as redis
+from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
 
-from celery_app import celery_app, process_document, process_document_w_celery
+from celery_app import process_document, celery_app
 
 app = FastAPI()
+redis = redis.from_url("redis://localhost")
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello World"}
+# Rate limit configuration
+RATE_LIMIT = 5  # requests
+TIME_WINDOW = 60  # seconds
 
-@app.post("/submit-document/")
-async def submit_document(document_data: dict):
-    """
-    Submit a document for processing and return the task ID without Celery (synchronous).
-    """
-    # Enqueue the task and get the task ID
-    task = process_document(document_data)
-    # return {"task_id": task.id}
-    return {"task_id": task}
+# async def is_rate_limited(ip: str) -> bool:
+#     current_time = int(time.time())
+#     key = f"rate-limit:{ip}"
+    
+#     # Increment the counter and set an expiry if it's a new key
+#     count = await redis.incr(key)
+#     if count == 1:
+#         await redis.expire(key, TIME_WINDOW)
+    
+#     # Check if limit exceeded
+#     if count > RATE_LIMIT:
+#         return True
+#     return False
 
-@app.post("/submit-document-w-celery/")
-async def submit_document_w_celery(document_data: dict):
-    """
-    Submit a document for processing and return the task ID with Celery (asynchronous).
-    Enqueues the document processing task.
-    """
-    # Enqueue the task and get the task ID
-    task = process_document_w_celery.delay(document_data)
-    return {"task_id": task.id}
+# @app.middleware("http")
+# async def rate_limit_middleware(request: Request, call_next):
+#     ip = request.client.host
+#     if await is_rate_limited(ip):
+#         raise HTTPException(status_code=429, detail="Rate limit exceeded")
+#     response = await call_next(request)
+#     return response
+
+@app.post("/process-doc/")
+async def process_doc(doc_id: str, background_tasks: BackgroundTasks):
+    # Enqueue task
+    task = process_document.delay(doc_id) # This is the Celery task
+    
+    # Optionally, return a task ID or status immediately to user
+    return {"status": "Processing started", "task_id": task.id}
 
 @app.get("/task-status/{task_id}")
 async def get_task_status(task_id: str):
-    """
-    Get the status of a task by task ID.
-    Checks the status of the task.
-    """
-    # Check the status of the task
-    task_result = AsyncResult(task_id, app=celery_app)
+    from celery.result import AsyncResult
+    try:
+        result = AsyncResult(task_id, app=celery_app)
+    except HTTPException as e:
+        print(">>> e:", e)
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
     
-    if task_result.state == "PENDING":
-        # Task is in queue or waiting to start
-        return {"status": "Processing", "task_id": task_id}
-    elif task_result.state == "SUCCESS":
-        # Task completed successfully
-        return {"status": "Completed", "result": task_result.result}
-    elif task_result.state == "FAILURE":
-        # Task failed
-        return {"status": "Failed", "error": str(task_result.info)}
-    else:
-        return {"status": task_result.state, "task_id": task_id}
+    return {"task_id": task_id, "status": result.status, "result": result.result}
