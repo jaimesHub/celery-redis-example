@@ -8,8 +8,8 @@ app = FastAPI()
 redis = redis.from_url("redis://localhost")
 
 # Rate limit configuration
-RATE_LIMIT = 5  # requests
-TIME_WINDOW = 60  # seconds
+# RATE_LIMIT = 5  # requests
+# TIME_WINDOW = 60  # seconds
 
 # async def is_rate_limited(ip: str) -> bool:
 #     current_time = int(time.time())
@@ -31,15 +31,30 @@ TIME_WINDOW = 60  # seconds
 #     if await is_rate_limited(ip):
 #         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 #     response = await call_next(request)
-#     return response
+#     return 
+
+# 1. Define a Pydantic model for the request body
+from pydantic import BaseModel
+
+class DocumentRequest(BaseModel):
+    doc_id: str
+
+# 2. Use the model in the endpoint
 
 @app.post("/process-doc/")
-async def process_doc(doc_id: str, background_tasks: BackgroundTasks):
+async def process_doc(request: DocumentRequest, background_tasks: BackgroundTasks):
+    if not request.doc_id:
+        raise HTTPException(status_code=404, detail="Document ID not provided")
+    
     # Enqueue task
-    task = process_document.delay(doc_id) # This is the Celery task
+    task = process_document.delay(request.doc_id) # This is the Celery task
     
     # Optionally, return a task ID or status immediately to user
-    return {"status": "Processing started", "task_id": task.id}
+    return {
+        "status": "Processing started", 
+        "task_id": task.id, 
+        "message": f"This task will take {task} seconds to complete"
+    }
 
 @app.get("/task-status/{task_id}")
 async def get_task_status(task_id: str):
